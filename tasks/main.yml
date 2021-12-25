@@ -1,0 +1,119 @@
+---
+- name: Add/modify groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid | default(omit) }}"
+    system: "{{ item.system | default(omit) }}"
+    local: "{{ item.local | default(omit) }}"
+    non_unique: "{{ item.non_unique | default(omit) }}"
+  loop: "{{ users_groups_present }}"
+
+- name: Remove groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    state: absent
+  loop: "{{ users_groups_absent }}"
+
+- name: Create SELinux context for non default homes
+  community.general.sefcontext:
+    setype: ssh_home_t
+    target: '{{ item.home }}/.ssh(/.*)?'
+  loop: "{{ users_present }}"
+  when:
+    - "'enabled' in ansible_selinux.status"
+    - item.home | default(false)
+    - item.home != "/home/" + item.name
+    - item.home != "/root"
+  no_log: true
+
+- name: Create non default home directories
+  ansible.builtin.file:
+    state: directory
+    path: "{{ item.home }}"
+    mode: 0700
+  loop: "{{ users_present }}"
+  when:
+    - item.create_home | default(false)
+    - item.home | default(false)
+    - item.home != "/home/" + item.name
+    - item.home != "/root"
+  no_log: true
+
+- name: Add/modify users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    append: "{{ item.append | default(omit) }}"
+    comment: "{{ item.comment | default(omit) }}"
+    create_home: "{{ item.create_home | default(omit) }}"
+    expires: "{{ item.expires | default(omit) }}"
+    force: "{{ item.force | default(omit) }}"
+    generate_ssh_key: "{{ item.generate_ssh_key | default(omit) }}"
+    group: "{{ item.group | default(omit) }}"
+    groups: "{{ item.groups | default(omit) }}"
+    home: "{{ item.home | default(omit) }}"
+    move_home: "{{ item.move_home | default(omit) }}"
+    password: "{{ item.password | default(omit) }}"
+    shell: "{{ item.shell | default(omit) }}"
+    system: "{{ item.system | default(omit) }}"
+    uid: "{{ item.uid | default(omit) }}"
+  loop: "{{ users_present }}"
+  no_log: true
+
+- name: Remove users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    state: absent
+    remove: "{{ item.remove | default(omit) }}"
+    force: "{{ item.force | default(omit) }}"
+  loop: "{{ users_absent }}"
+
+- name: Set home directory permissions
+  ansible.builtin.file:
+    path: "{{ item.home }}"
+    owner: "{{ item.name }}"
+    group: "{{ item.group | default(item.name) }}"
+    mode: 0700
+  loop: "{{ users_present }}"
+  when:
+    - item.home | default(false)
+    - item.home != "/root"
+  no_log: true
+
+- name: Add authorized_keys
+  ansible.posix.authorized_key:
+    user: "{{ item.0.name }}"
+    key: "{{ item.1 }}"
+    manage_dir: true
+  loop: "{{ query('subelements', users_present, 'authorized_keys', {'skip_missing': true}) }}"
+  no_log: true
+
+- name: Make sure .ssh is set correctly
+  ansible.builtin.file:
+    state: directory
+    path: "{{ item.home | default('/home/' + item.name) }}/.ssh"
+    owner: "{{ item.name }}"
+    group: "{{ item.group | default(item.name) }}"
+    mode: 0700
+    setype: ssh_home_t
+  loop: "{{ users_present }}"
+  when: item.authorized_keys is defined or item.ssh_keys is defined or item.known_hosts is defined
+  no_log: true
+
+- name: Copy ssh keys
+  ansible.builtin.copy:
+    src: "{{ item.1.src }}"
+    dest: "{{ item.0.home | default('/home') }}/.ssh/{{ item.1.dest_file }}"
+    owner: "{{ item.0.name }}"
+    group: "{{ item.0.group | default(item.0.name) }}"
+    mode: 0400
+  loop: "{{ query('subelements', users_present, 'ssh_keys', {'skip_missing': true}) }}"
+  no_log: true
+
+- name: Generate known_hosts
+  ansible.builtin.known_hosts:
+    name: "{{ item.1.name }}"
+    key: "{{ item.1.key }}"
+    hash_host: "{{ item.1.hash_host | default(false) }}"
+    path: "{{ item.1.path | default('/home/' + item.0.name + '/.ssh/known_hosts') }}"
+  loop: "{{ query('subelements', users_present, 'known_hosts', {'skip_missing': true}) }}"
+  no_log: true
